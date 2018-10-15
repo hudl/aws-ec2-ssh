@@ -36,7 +36,7 @@ Parameters:
     - RHEL
     - CentOS
   Version:
-    Description: 'See https://github.com/widdix/aws-ec2-ssh/releases for available versions'
+    Description: 'See https://github.com/hudl/aws-ec2-ssh/releases for available versions'
     Type: String
     Default: '1.6.0-1'
 Mappings:

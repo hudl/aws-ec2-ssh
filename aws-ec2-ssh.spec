@@ -12,7 +12,7 @@ Release:    %{release}
 Group:      System/Administration
 License:    MIT
 URL:        https://cloudonaut.io/manage-aws-ec2-ssh-access-with-iam/
-Source0:    https://github.com/widdix/aws-ec2-ssh/archive/%{archive}.tar.gz
+Source0:    https://github.com/hudl/aws-ec2-ssh/archive/%{archive}.tar.gz
 BuildArch:  noarch
 Vendor:     widdix GmbH
 Packager:   Michiel van Baak

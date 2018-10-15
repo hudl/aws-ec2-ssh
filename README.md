@@ -60,7 +60,7 @@ A picture is worth a thousand words:
 4. The configuration file is placed into `/etc/aws-ec2-ssh.conf`
 5. The RPM creates a crontab file to run import_users.sh every 10 minutes. This file is placed in `/etc/cron.d/import_users`
 
-> <sup>1</sup>Check the [releases](https://github.com/widdix/aws-ec2-ssh/releases) and use the latest released RPM.
+> <sup>1</sup>Check the [releases](https://github.com/hudl/aws-ec2-ssh/releases) and use the latest released RPM.
 
 ### Install via install.sh script
 
