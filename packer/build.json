@@ -1,0 +1,50 @@
+{
+  "variables": {
+    "ssh_private_key_file": ""
+  },
+  "builders": [
+        {
+        "type": "amazon-ebs",
+        "region": "us-east-1",
+        "source_ami": "ami-0ff8a91507f77f867",
+        "instance_type": "t2.micro",
+        "associate_public_ip_address": true,
+        "ssh_username": "ec2-user",
+        "ami_name": "bastion-{{isotime \"2006-01-02\"}}-4",
+        "ami_block_device_mappings": [
+            {
+              "device_name": "/dev/xvda",
+              "volume_size": 8,
+              "volume_type": "gp2",
+              "delete_on_termination": true
+            }
+        ],
+        "security_group_id": "sg-04c1bbb44b1ec8548",
+        "shutdown_behavior": "terminate",
+        "ssh_keypair_name": "thor",
+        "ssh_agent_auth": true,
+        "vpc_id": "vpc-0e58d18d2b36c119b",
+        "subnet_id": "subnet-020675475bb49eb2a"
+        }
+   ],
+   "provisioners": [{
+      "type": "shell",
+      "inline": ["mkdir /tmp/aws-ec2-ssh"]
+   },{
+      "type": "file",
+      "source": "../",
+      "destination": "/tmp/aws-ec2-ssh"
+   },{
+      "type": "shell",
+      "script": "files/build.sh",
+      "execute_command": "sudo -S sh -c '{{ .Vars }} {{ .Path }}'",
+      "pause_before": "10s"
+    }
+   ],
+   "post-processors": [
+     {
+       "type": "manifest",
+       "output": "manifest.json"
+     }
+   ]
+}
