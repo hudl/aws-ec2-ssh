@@ -186,13 +186,12 @@ function create_or_update_local_user() {
         log "Created new user ${username}"
     fi
     /usr/sbin/usermod -a -G "${localusergroups}" "${username}"
-
     # Should we add this user to sudo ?
     if [[ ! -z "${SUDOERS_GROUPS}" ]]
     then
         SaveUserFileName=$(echo "${username}" | tr "." " ")
         SaveUserSudoFilePath="/etc/sudoers.d/$SaveUserFileName"
-        if [[ "${SUDOERS_GROUPS}" == "##ALL##" ]] || echo "${sudousers}" | grep "^${username}\$" > /dev/null
+        if [[ "${SUDOERS_GROUPS}" == "##ALL##" ]] || echo "${sudousers}" | grep "\s*${username}\s*" > /dev/null
         then
             echo "${username} ALL=(ALL) NOPASSWD:ALL" > "${SaveUserSudoFilePath}"
         else
@@ -242,21 +241,43 @@ function sync_accounts() {
     local removed_users
     local user
 
-    # init group and sudoers from tags
-    get_iam_groups_from_tag
-    get_sudoers_groups_from_tag
+    S3_BUCKET='hudl-config'
+    S3_DIR='ssh'
+    USER_FILE='user-permission.txt'
+    LOCAL_DIR='/tmp'
 
-    # setup the aws credentials if needed
-    setup_aws_credentials
-    
-    iam_users=$(get_clean_iam_users | sort | uniq)
+    aws s3 sync --exclude '*' --include $USER_FILE s3://$S3_BUCKET/$S3_DIR $LOCAL_DIR > /dev/null 2>&1
+
+    all_user_info=$(cat $LOCAL_DIR/$USER_FILE)
+
+    for line in $all_user_info
+    do
+	group_name=`echo $line | awk -F '=' '{print $1}'`
+	sudoers_groups=($(echo "$SUDOERS_GROUPS" | tr ',' '\n'))
+	if printf '%s\n' ${sudoers_groups[@]} | grep -q -P "^$group_name$"; then
+	  all_sudoers_users=`echo $line | awk -F '=' '{print $2}'`
+	  sudoers_users=($(echo "$all_sudoers_users" | tr ',' '\n'))
+	  for sudoers_user in "${sudoers_users[@]}"
+	  do
+            sudoers_users_list=( "${sudoers_users_list[@]}" "$sudoers_user" )
+          done
+	fi
+        all_users=`echo $line | awk -F '=' '{print $2}'`
+        users=($(echo "$all_users" | tr ',' '\n'))
+        for user in "${users[@]}"
+	do
+            users_list=( "${users_list[@]}" "$user" )
+	done
+    done
+    iam_users=`printf '%s\n' "${users_list[@]}"| sort -u | tr '\n' ' '`
+    sudo_users=`printf '%s\n' "${sudoers_users_list[@]}"| sort -u | tr '\n' ' '`
+
     if [[ -z "${iam_users}" ]]
     then
       log "we just got back an empty iam_users user list which is likely caused by an IAM outage!"
       exit 1
     fi
 
-    sudo_users=$(get_clean_sudoers_users | sort | uniq)
     if [[ ! -z "${SUDOERS_GROUPS}" ]] && [[ ! "${SUDOERS_GROUPS}" == "##ALL##" ]] && [[ -z "${sudo_users}" ]]
     then
       log "we just got back an empty sudo_users user list which is likely caused by an IAM outage!"
