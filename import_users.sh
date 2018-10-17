@@ -58,104 +58,11 @@ fi
 INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
 REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | grep region | awk -F\" '{print $4}')
 
-function setup_aws_credentials() {
-    local stscredentials
-    if [[ ! -z "${ASSUMEROLE}" ]]
-    then
-        stscredentials=$(aws sts assume-role \
-            --role-arn "${ASSUMEROLE}" \
-            --role-session-name something \
-            --query '[Credentials.SessionToken,Credentials.AccessKeyId,Credentials.SecretAccessKey]' \
-            --output text)
-
-        AWS_ACCESS_KEY_ID=$(echo "${stscredentials}" | awk '{print $2}')
-        AWS_SECRET_ACCESS_KEY=$(echo "${stscredentials}" | awk '{print $3}')
-        AWS_SESSION_TOKEN=$(echo "${stscredentials}" | awk '{print $1}')
-        AWS_SECURITY_TOKEN=$(echo "${stscredentials}" | awk '{print $1}')
-        export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
-    fi
-}
-
-# Get list of iam groups from tag
-function get_iam_groups_from_tag() {
-    if [ "${IAM_AUTHORIZED_GROUPS_TAG}" ]
-    then
-        IAM_AUTHORIZED_GROUPS=$(\
-            aws --region $REGION ec2 describe-tags \
-            --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=$IAM_AUTHORIZED_GROUPS_TAG" \
-            --query "Tags[0].Value" --output text \
-        )
-    fi
-}
-
-# Get all IAM users (optionally limited by IAM groups)
-function get_iam_users() {
-    local group
-    if [ -z "${IAM_AUTHORIZED_GROUPS}" ]
-    then
-        aws iam list-users \
-            --query "Users[].[UserName]" \
-            --output text \
-        | sed "s/\r//g"
-    else
-        for group in $(echo ${IAM_AUTHORIZED_GROUPS} | tr "," " "); do
-            aws iam get-group \
-                --group-name "${group}" \
-                --query "Users[].[UserName]" \
-                --output text \
-            | sed "s/\r//g"
-        done
-    fi
-}
-
-# Run all found iam users through clean_iam_username
-function get_clean_iam_users() {
-    local raw_username
-
-    for raw_username in $(get_iam_users); do
-        clean_iam_username "${raw_username}" | sed "s/\r//g"
-    done
-}
-
 # Get previously synced users
 function get_local_users() {
     /usr/bin/getent group ${LOCAL_MARKER_GROUP} \
         | cut -d : -f4- \
         | sed "s/,/ /g"
-}
-
-# Get list of IAM groups marked with sudo access from tag
-function get_sudoers_groups_from_tag() {
-    if [ "${SUDOERS_GROUPS_TAG}" ]
-    then
-        SUDOERS_GROUPS=$(\
-            aws --region $REGION ec2 describe-tags \
-            --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=$SUDOERS_GROUPS_TAG" \
-            --query "Tags[0].Value" --output text \
-        )
-    fi
-}
-
-# Get IAM users of the groups marked with sudo access
-function get_sudoers_users() {
-    local group
-
-    [[ -z "${SUDOERS_GROUPS}" ]] || [[ "${SUDOERS_GROUPS}" == "##ALL##" ]] ||
-        for group in $(echo "${SUDOERS_GROUPS}" | tr "," " "); do
-            aws iam get-group \
-                --group-name "${group}" \
-                --query "Users[].[UserName]" \
-                --output text
-        done
-}
-
-# Get the unix usernames of the IAM users within the sudo group
-function get_clean_sudoers_users() {
-    local raw_username
-
-    for raw_username in $(get_sudoers_users); do
-        clean_iam_username "${raw_username}"
-    done
 }
 
 # Create or update a local user based on info from the IAM group
@@ -186,13 +93,12 @@ function create_or_update_local_user() {
         log "Created new user ${username}"
     fi
     /usr/sbin/usermod -a -G "${localusergroups}" "${username}"
-
     # Should we add this user to sudo ?
     if [[ ! -z "${SUDOERS_GROUPS}" ]]
     then
         SaveUserFileName=$(echo "${username}" | tr "." " ")
         SaveUserSudoFilePath="/etc/sudoers.d/$SaveUserFileName"
-        if [[ "${SUDOERS_GROUPS}" == "##ALL##" ]] || echo "${sudousers}" | grep "^${username}\$" > /dev/null
+        if [[ "${SUDOERS_GROUPS}" == "##ALL##" ]] || echo "${sudousers}" | grep "\s*${username}\s*" > /dev/null
         then
             echo "${username} ALL=(ALL) NOPASSWD:ALL" > "${SaveUserSudoFilePath}"
         else
@@ -215,15 +121,6 @@ function delete_local_user() {
     log "Deleted user ${1}"
 }
 
-function clean_iam_username() {
-    local clean_username="${1}"
-    clean_username=${clean_username//"+"/".plus."}
-    clean_username=${clean_username//"="/".equal."}
-    clean_username=${clean_username//","/".comma."}
-    clean_username=${clean_username//"@"/".at."}
-    echo "${clean_username}"
-}
-
 function sync_accounts() {
     if [ -z "${LOCAL_MARKER_GROUP}" ]
     then
@@ -242,21 +139,46 @@ function sync_accounts() {
     local removed_users
     local user
 
-    # init group and sudoers from tags
-    get_iam_groups_from_tag
-    get_sudoers_groups_from_tag
+    S3_BUCKET='hudl-config'
+    S3_DIR='ssh'
+    USER_FILE='user-permission.txt'
+    LOCAL_DIR='/tmp'
 
-    # setup the aws credentials if needed
-    setup_aws_credentials
-    
-    iam_users=$(get_clean_iam_users | sort | uniq)
+    aws s3 sync --exclude '*' --include $USER_FILE s3://$S3_BUCKET/$S3_DIR $LOCAL_DIR > /dev/null 2>&1
+
+    all_user_info=$(cat $LOCAL_DIR/$USER_FILE)
+
+    for line in $all_user_info
+    do
+        group_name=`echo $line | awk -F '=' '{print $1}'`
+        sudoers_groups=($(echo "$SUDOERS_GROUPS" | tr ',' '\n'))
+        # We'll add users to our sudoers array if they're in a sudoer group
+        if printf '%s\n' ${sudoers_groups[@]} | grep -q -P "^$group_name$"; then
+            all_sudoers_users=`echo $line | awk -F '=' '{print $2}'`
+            sudoers_users=($(echo "$all_sudoers_users" | tr ',' '\n'))
+            for sudoers_user in "${sudoers_users[@]}"
+            do
+                sudoers_users_list=( "${sudoers_users_list[@]}" "$sudoers_user" )
+            done
+        fi
+        # All users get added to our users array
+        all_users=`echo $line | awk -F '=' '{print $2}'`
+        users=($(echo "$all_users" | tr ',' '\n'))
+        for user in "${users[@]}"
+        do
+            users_list=( "${users_list[@]}" "$user" )
+        done
+    done
+    # We'll remove any duplicates and make it nice and sorted
+    iam_users=`printf '%s\n' "${users_list[@]}"| sort -u | tr '\n' ' '`
+    sudo_users=`printf '%s\n' "${sudoers_users_list[@]}"| sort -u | tr '\n' ' '`
+
     if [[ -z "${iam_users}" ]]
     then
       log "we just got back an empty iam_users user list which is likely caused by an IAM outage!"
       exit 1
     fi
 
-    sudo_users=$(get_clean_sudoers_users | sort | uniq)
     if [[ ! -z "${SUDOERS_GROUPS}" ]] && [[ ! "${SUDOERS_GROUPS}" == "##ALL##" ]] && [[ -z "${sudo_users}" ]]
     then
       log "we just got back an empty sudo_users user list which is likely caused by an IAM outage!"
